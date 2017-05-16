@@ -1,7 +1,131 @@
-﻿// Learn more about F# at http://fsharp.org
-// See the 'F# Tutorial' project for more help.
+﻿open Argu
+open FSharp.Data
+open Suave
+open Suave.Filters
+open Suave.Logging
+open Suave.Operators
+open Suave.Successful
+
+type SlackRequest =
+    {
+        Token       : string option
+        TeamId      : string option
+        TeamDomain  : string option
+        ChannelId   : string option
+        ChannelName : string option
+        UserId      : string option
+        UserName    : string option
+        Command     : string option
+        Text        : string option
+        ResponseUrl : string option
+    }
+    static member FromHttpContext (ctx : HttpContext) =
+        let get key =
+            match ctx.request.formData key with
+            | Choice1Of2 x  -> Some(x)
+            | _             -> None
+        {
+            Token       = get "token"
+            TeamId      = get "team_id"
+            TeamDomain  = get "team_domain"
+            ChannelId   = get "channel_id"
+            ChannelName = get "channel_name"
+            UserId      = get "user_id"
+            UserName    = get "user_name"
+            Command     = get "command"
+            Text        = get "text"
+            ResponseUrl = get "response_url"
+        }
+
+type SlackResponseType = 
+    | Ephemeral
+    | InChannel
+    with
+        override this.ToString() = 
+            match this with
+            | Ephemeral -> "ephemeral"
+            | InChannel -> "in_channel"
+
+type SlackResponse = 
+    {
+        responseType: SlackResponseType
+        text: string
+    }
+    with
+        override this.ToString() = 
+            "{ \"response_type\": \"" + this.responseType.ToString() + "\", \"text\": \"" + this.text + "\"}"
+
+let log = Suave.Logging.Log.create("foo")
+
+let logSimple(s: string) =
+    Message.event Info s |> log.logSimple
+
+type Arguments = 
+    | [<Mandatory>] IncomingWebhookUrl of url: string
+with
+    interface IArgParserTemplate with
+        member this.Usage = 
+            match this with
+            | IncomingWebhookUrl _ -> "incoming webhook URL to use"
+
+let echoRequestHandler(r: SlackRequest): SlackResponse = 
+    {
+        SlackResponse.responseType = SlackResponseType.InChannel
+        text = r.Text |> Option.defaultValue("")
+    }
+
+let sendStringViaWebhook(webhookUrl: string)(s: string) = 
+    // send the request to the webhook
+    let response = "{\"text\": \"" + s + "\"}"
+    Http.RequestString(webhookUrl, httpMethod = "POST", body = TextRequest(response.ToString()), headers = [ HttpRequestHeaders.ContentType(HttpContentTypes.Json) ]) |> ignore
+
+let countdownRequestHandler(webhookUrl: string)(r: SlackRequest): SlackResponse = 
+    let resp = 
+        {
+            SlackResponse.responseType = SlackResponseType.InChannel
+            text = "Commencing countdown!"
+        }
+
+    async {
+        do! Async.Sleep(1000)
+        sendStringViaWebhook(webhookUrl)("5!")
+        do! Async.Sleep(1000)
+        sendStringViaWebhook(webhookUrl)("4!")
+        do! Async.Sleep(1000)
+        sendStringViaWebhook(webhookUrl)("3!")
+        do! Async.Sleep(1000)
+        sendStringViaWebhook(webhookUrl)("2!")
+        do! Async.Sleep(1000)
+        sendStringViaWebhook(webhookUrl)("1!")
+        do! Async.Sleep(1000)
+        sendStringViaWebhook(webhookUrl)("Blast off!")
+    } |> Async.StartAsTask |> ignore
+
+    resp
+
+let commandHandler(webhookUrl: string)(ctx: HttpContext) = 
+    (
+        let req = SlackRequest.FromHttpContext ctx
+        let resp = 
+            match req.Text with
+            | Some("countdown") -> countdownRequestHandler(webhookUrl)(req)
+            | _ -> echoRequestHandler(req)
+
+        resp.ToString()
+        |> OK
+    ) ctx
+
+let app(webhookUrl: string) = 
+    let handler = commandHandler(webhookUrl)
+    choose [
+        POST >=> path "/command" >=> handler >=> Writers.setMimeType "application/json"
+    ]
 
 [<EntryPoint>]
 let main argv = 
-    printfn "%A" argv
-    0 // return an integer exit code
+    let parser = ArgumentParser.Create<Arguments>()
+    let results = parser.Parse(argv)
+
+    startWebServer defaultConfig (app(results.GetResult(<@ IncomingWebhookUrl @>)))
+
+    0

@@ -1,0 +1,19 @@
+source https://nuget.org/api/v2
+
+nuget FSharp.Core ~> 4.1 redirects: force
+nuget FSharp.Data
+nuget Suave
+nuget Argu
+nuget Expecto
+
+group Build
+  source https://nuget.org/api/v2
+
+  nuget SourceLink.Fake
+  nuget FAKE
+
+group Test
+  source https://nuget.org/api/v2
+  nuget NUnit ~> 2
+  nuget NUnit.Runners ~> 2
+
